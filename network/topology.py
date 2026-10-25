@@ -14,7 +14,7 @@ LINK_BW = 10  # every link is limited to 10 Mbps so congestion is easy to create
 
 def build_network(mode):
     if mode == "sdn":
-        # SDN mode: switches take instructions from our controller (used from Week 2)
+        # SDN mode: switches take instructions from our controller
         net = Mininet(controller=None, switch=OVSSwitch, link=TCLink, autoSetMacs=True)
         net.addController("c0", controller=RemoteController, ip="127.0.0.1", port=6653)
         sw_opts = {"protocols": "OpenFlow13"}
@@ -49,9 +49,15 @@ def main():
     setLogLevel("info")
     net = build_network(args.mode)
     net.start()
-    if args.mode == "test":
+
+    if args.mode == "sdn":
+        # Fill every host's ARP table up front, so hosts never need broadcast
+        # messages (our network has loops, and broadcasts would circle forever).
+        net.staticArp()
+    else:
         info("*** Waiting 40 seconds for the spanning tree to settle...\n")
         time.sleep(40)
+
     CLI(net)
     net.stop()
 
