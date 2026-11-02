@@ -54,6 +54,9 @@ def main():
         # Fill every host's ARP table up front, so hosts never need broadcast
         # messages (our network has loops, and broadcasts would circle forever).
         net.staticArp()
+        # Web API (port 8081) that cuts links and starts congestion or flood traffic
+        from injector import start_injector
+        start_injector(net)
     else:
         info("*** Waiting 40 seconds for the spanning tree to settle...\n")
         time.sleep(40)
@@ -64,4 +67,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -30,7 +30,7 @@ Lists per-flow paths set through /install_path.
 Reply: {"switches_connected": [1, 2, 3, 4, 5, 6], "paths": ["h1->h5 via s2", "h5->h1 via s2"]}
 
 ## Planned (not built yet)
-POST /set_meter, POST /inject/* (cut link, congest, flood), link-down events.
+link-down events.
 
 ## POST /block
 Drops (or allows again) traffic h<src> -> h<dst>. The drop rule (priority 30) is placed on the source host's edge switch, so blocked packets never use bandwidth.
@@ -41,3 +41,24 @@ Blocks are remembered and re-installed if a switch reconnects.
 
 ## GET /blocks
 Reply: {"blocked": ["h8->h5"]}
+
+# Injection API (port 8081, runs inside the Mininet process)
+Available only while "sudo python3 topology.py --mode sdn" is running. Base URL: http://127.0.0.1:8081
+
+## POST /inject/link
+Request: {"a": "s1", "b": "s5", "action": "down"}     action = "down" (cut) or "up" (restore). A link joins s1 or s2 with one of s3..s6.
+Reply:   {"ok": true, "event": {"time": 1761400000.1, "kind": "link_down", "link": "s1-s5"}}
+
+## POST /inject/congest   and   POST /inject/flood
+Request: {"src": 2, "dst": 6, "mbps": 9, "seconds": 40}     (defaults: congest 8 Mbps / 60 s, flood 20 Mbps / 30 s; mbps 1..50, seconds 1..300)
+Starts UDP traffic from h<src> to h<dst>.
+Reply:   {"ok": true, "event": {"time": ..., "kind": "congest", "src": "h2", "dst": "h6", "mbps": 9.0, "seconds": 40}}
+
+## POST /inject/stop
+Stops injected traffic and brings every cut link back up. Reply: {"ok": true, "event": {"kind": "stop_all", ...}}
+
+## GET /inject/status
+Reply: {"links_down": ["s1-s5"], "active_traffic": [{"kind": "congest", "src": "h2", "dst": "h6", "mbps": 9.0, "seconds_left": 31}]}
+
+## GET /inject/events
+History of all injections (last 50). Each event has "time" (seconds since 1970) = the moment the fault started. MTTD = detection time minus this time.
