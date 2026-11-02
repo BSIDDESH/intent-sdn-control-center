@@ -30,4 +30,14 @@ Lists per-flow paths set through /install_path.
 Reply: {"switches_connected": [1, 2, 3, 4, 5, 6], "paths": ["h1->h5 via s2", "h5->h1 via s2"]}
 
 ## Planned (not built yet)
-POST /block, POST /set_meter, POST /inject/* (cut link, congest, flood), link-down events.
+POST /set_meter, POST /inject/* (cut link, congest, flood), link-down events.
+
+## POST /block
+Drops (or allows again) traffic h<src> -> h<dst>. The drop rule (priority 30) is placed on the source host's edge switch, so blocked packets never use bandwidth.
+Request: {"src": 8, "dst": 5, "action": "block"}        action = "block" or "unblock"; optional "both": true blocks both directions
+Reply:   {"ok": true, "result": {"src": 8, "dst": 5, "blocked": true, "both": false}}
+Errors:  400 bad values or action, 503 switches not connected.
+Blocks are remembered and re-installed if a switch reconnects.
+
+## GET /blocks
+Reply: {"blocked": ["h8->h5"]}

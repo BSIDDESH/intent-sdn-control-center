@@ -16,6 +16,7 @@ from os_ken.ofproto import ofproto_v1_3
 CORE_PORT_ON_EDGE = {1: 3, 2: 4}     # core dpid -> port on the edge switch that faces it
 BASE_PRIORITY = 10                   # default routes (all traffic via s1)
 FLOW_PRIORITY = 20                   # per-flow routes installed through the REST API
+BLOCK_PRIORITY = 30                  # block (drop) rules always win over routes
 
 
 def edge_of(host):
@@ -64,6 +65,7 @@ class PathController(app_manager.OSKenApp):
         super().__init__(*args, **kwargs)
         self.dps = {}        # dpid -> datapath object of each connected switch
         self.paths = {}      # (src, dst) -> core switch currently used (1 or 2)
+        self.blocks = set()  # (src, dst) pairs whose traffic is dropped
         self.counters = {}   # (dpid, port) -> last byte counters {"t","tx","rx"}
         self.rates = {}      # (dpid, port) -> {"tx_mbps","rx_mbps"} measured between two polls
         hub.spawn(self.poll_loop)
@@ -89,6 +91,9 @@ class PathController(app_manager.OSKenApp):
             for dpid, port in hops(a, b, core):
                 if dpid == dp.id:
                     self.add_flow(dp, mac(a), mac(b), port, FLOW_PRIORITY)
+        for a, b in self.blocks:                       # and the block rules
+            if edge_of(a) == dp.id:
+                self.add_drop(dp, mac(a), mac(b))
 
     # ---- traffic statistics -------------------------------------------------
     def poll_loop(self):
@@ -152,6 +157,12 @@ class PathController(app_manager.OSKenApp):
         dp.send_msg(p.OFPFlowMod(datapath=dp, command=o.OFPFC_DELETE_STRICT, priority=priority,
                                  match=match, out_port=o.OFPP_ANY, out_group=o.OFPG_ANY))
 
+    def add_drop(self, dp, src_mac, dst_mac):
+        """A rule with no actions = the switch silently drops matching packets."""
+        p = dp.ofproto_parser
+        match = p.OFPMatch(eth_src=src_mac, eth_dst=dst_mac)
+        dp.send_msg(p.OFPFlowMod(datapath=dp, priority=BLOCK_PRIORITY, match=match, instructions=[]))
+
     # ---- what the REST API calls ---------------------------------------------
     def install_path(self, src, dst, core):
         """Send traffic h<src> -> h<dst> (and back) through core switch <core> (1 or 2)."""
@@ -172,6 +183,26 @@ class PathController(app_manager.OSKenApp):
         self.logger.info("Path h%d <-> h%d now goes through s%d", src, dst, core)
         return {"src": src, "dst": dst, "core": core}
 
+    def set_block(self, src, dst, enable, both=False):
+        """Drop (or allow again) traffic h<src> -> h<dst> at the first switch it meets."""
+        if not (1 <= src <= 8) or not (1 <= dst <= 8) or src == dst:
+            raise ValueError("need src and dst in 1..8 (different)")
+        pairs = [(src, dst)] + ([(dst, src)] if both else [])
+        missing = sorted({edge_of(a) for a, _ in pairs} - set(self.dps))
+        if missing:
+            raise RuntimeError("switches not connected: %s" % missing)
+        for a, b in pairs:
+            dp = self.dps[edge_of(a)]
+            if enable:
+                self.add_drop(dp, mac(a), mac(b))
+                self.blocks.add((a, b))
+            else:
+                self.delete_flow(dp, mac(a), mac(b), BLOCK_PRIORITY)
+                self.blocks.discard((a, b))
+        self.logger.info("%s h%d -> h%d%s", "BLOCKED" if enable else "UNBLOCKED", src, dst,
+                         " (both directions)" if both else "")
+        return {"src": src, "dst": dst, "blocked": enable, "both": both}
+
     # ---- tiny REST API (plain WSGI) -------------------------------------------
     @staticmethod
     def reply(start_response, obj, status="200 OK"):
@@ -190,6 +221,16 @@ class PathController(app_manager.OSKenApp):
             if method == "GET" and path == "/stats":
                 return self.reply(start_response, {"time": time.time(), "poll_seconds": POLL_SECONDS,
                                                     "links": self.link_stats()})
+            if method == "GET" and path == "/blocks":
+                return self.reply(start_response, {"blocked": ["h%d->h%d" % (a, b) for a, b in sorted(self.blocks)]})
+            if method == "POST" and path == "/block":
+                size = int(environ.get("CONTENT_LENGTH") or 0)
+                data = json.loads(environ["wsgi.input"].read(size))
+                if data.get("action") not in ("block", "unblock"):
+                    raise ValueError("action must be 'block' or 'unblock'")
+                result = self.set_block(int(data["src"]), int(data["dst"]), data["action"] == "block",
+                                        bool(data.get("both", False)))
+                return self.reply(start_response, {"ok": True, "result": result})
             if method == "POST" and path == "/install_path":
                 size = int(environ.get("CONTENT_LENGTH") or 0)
                 data = json.loads(environ["wsgi.input"].read(size))
