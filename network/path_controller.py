@@ -57,6 +57,13 @@ def build_links():
 
 LINKS = build_links()
 
+# (switch dpid, port number) -> name of the link that port belongs to, like 's1-s5'
+PORT_TO_LINK = {}
+for _l in LINKS:
+    PORT_TO_LINK[(int(_l["b"][1:]), _l["b_port"])] = "%s-%s" % (_l["a"], _l["b"])
+    if _l["a"].startswith("s"):
+        PORT_TO_LINK[(int(_l["a"][1:]), _l["a_port"])] = "%s-%s" % (_l["a"], _l["b"])
+
 
 class PathController(app_manager.OSKenApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -66,6 +73,7 @@ class PathController(app_manager.OSKenApp):
         self.dps = {}        # dpid -> datapath object of each connected switch
         self.paths = {}      # (src, dst) -> core switch currently used (1 or 2)
         self.blocks = set()  # (src, dst) pairs whose traffic is dropped
+        self.link_events = []     # link up / down events reported by the switches
         self.counters = {}   # (dpid, port) -> last byte counters {"t","tx","rx"}
         self.rates = {}      # (dpid, port) -> {"tx_mbps","rx_mbps"} measured between two polls
         hub.spawn(self.poll_loop)
@@ -94,6 +102,22 @@ class PathController(app_manager.OSKenApp):
         for a, b in self.blocks:                       # and the block rules
             if edge_of(a) == dp.id:
                 self.add_drop(dp, mac(a), mac(b))
+
+    # ---- link up / down events ----------------------------------------------
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status(self, ev):
+        """A switch tells us at once when one of its ports goes down or comes back up."""
+        msg = ev.msg
+        dp, desc, o = msg.datapath, msg.desc, msg.datapath.ofproto
+        link = PORT_TO_LINK.get((dp.id, desc.port_no))
+        if link is None or msg.reason != o.OFPPR_MODIFY:
+            return
+        down = bool(desc.state & o.OFPPS_LINK_DOWN) or bool(desc.config & o.OFPPC_PORT_DOWN)
+        event = {"time": time.time(), "kind": "link_down" if down else "link_up",
+                 "link": link, "switch": "s%d" % dp.id, "port": desc.port_no}
+        self.link_events.append(event)
+        del self.link_events[:-200]
+        self.logger.info("%s: %s (reported by s%d port %d)", event["kind"].upper(), link, dp.id, desc.port_no)
 
     # ---- traffic statistics -------------------------------------------------
     def poll_loop(self):
@@ -221,6 +245,8 @@ class PathController(app_manager.OSKenApp):
             if method == "GET" and path == "/stats":
                 return self.reply(start_response, {"time": time.time(), "poll_seconds": POLL_SECONDS,
                                                     "links": self.link_stats()})
+            if method == "GET" and path == "/events":
+                return self.reply(start_response, {"now": time.time(), "events": self.link_events[-50:]})
             if method == "GET" and path == "/blocks":
                 return self.reply(start_response, {"blocked": ["h%d->h%d" % (a, b) for a, b in sorted(self.blocks)]})
             if method == "POST" and path == "/block":

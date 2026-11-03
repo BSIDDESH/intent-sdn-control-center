@@ -62,3 +62,8 @@ Reply: {"links_down": ["s1-s5"], "active_traffic": [{"kind": "congest", "src": "
 
 ## GET /inject/events
 History of all injections (last 50). Each event has "time" (seconds since 1970) = the moment the fault started. MTTD = detection time minus this time.
+
+## GET /events  (controller, port 8080)
+Link up/down events reported instantly by the switches (OpenFlow port-status messages). Each failure appears twice, once from each end of the link.
+Reply: {"now": 1761400005.3, "events": [{"time": 1761400000.12, "kind": "link_down", "link": "s1-s5", "switch": "s1", "port": 3}, ...]}
+kind = "link_down" or "link_up". Detection time = event "time" minus the fault start time from GET :8081/inject/events.
